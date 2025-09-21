@@ -13,8 +13,7 @@
 html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;}
 body{background:var(--bg);color:var(--text);}
 
-/* Leaflet map container must have height */
-#map{position:absolute;inset:0;z-index:0;height:100vh;width:100%}
+#map{position:absolute;inset:0;z-index:0}
 
 /* header + tiny controls */
 #header{
@@ -96,20 +95,10 @@ textarea{min-height:60px;resize:vertical}
 }
 .urg-labels{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;margin-top:2px}
 #urgencyValue {font-size:13px;font-weight:600;margin-left:6px}
-
-/* sync badge */
-#syncBadge{
-  position:fixed;right:14px;bottom:14px;padding:8px 10px;border-radius:10px;background:#111;color:white;font-size:13px;z-index:4000;
-  box-shadow:0 6px 18px rgba(0,0,0,0.25);display:flex;align-items:center;gap:8px;
-}
-#syncDot{width:10px;height:10px;border-radius:50%;background:#ef4444;display:inline-block}
-
-/* small responsive tweak */
-@media(max-width:480px){ #searchBox{width:86%;} .fab{width:48px;height:48px} #header{font-size:13px} }
 </style>
 
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lz-string/libs/lz-string.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
@@ -173,8 +162,6 @@ textarea{min-height:60px;resize:vertical}
   <div id="tasks"></div>
 </div>
 
-<div id="syncBadge" title="Sync status" style="display:none"><span id="syncDot"></span><span id="syncText">Offline</span></div>
-
 <script>
 document.addEventListener('DOMContentLoaded', init);
 function init(){
@@ -201,111 +188,40 @@ const backSync = document.getElementById('backSync');
 const fabContainer = document.getElementById('fab-container');
 const urgency = document.getElementById('urgency');
 const urgencyValue = document.getElementById('urgencyValue');
-const syncBadge = document.getElementById('syncBadge');
-const syncDot = document.getElementById('syncDot');
-const syncText = document.getElementById('syncText');
+
+const map = new maplibregl.Map({
+  container: 'map',
+  style: {version:8,sources:{osm:{type:'raster',tiles:['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],tileSize:256}},layers:[{id:'osm',type:'raster',source:'osm'}]},
+  center:[0,20], zoom:2
+});
+map.addControl(new maplibregl.NavigationControl());
 
 let reports = [];
 let markers = [];
 let manualMode = false;
 let manualMarker = null;
 let heatmapOn = false;
-let pendingQueue = loadPending(); // offline queue
-let syncing = false;
-  
-async function syncWithServer() {
-  try {
-    document.querySelector("#syncStatus").textContent = "Syncing...";
-    const res = await fetch("/api/reports");
-    const serverReports = await res.json();
-    const localReports = JSON.parse(localStorage.getItem("reports") || "[]");
-
-    const merged = [...localReports];
-    serverReports.forEach(r => {
-      if (!merged.some(l => l.id === r.id)) merged.push(r);
-    });
-
-    localStorage.setItem("reports", JSON.stringify(merged));
-    renderPins(merged);
-    renderTasks(merged);
-    document.querySelector("#syncStatus").textContent = "Online ✓";
-  } catch (e) {
-    console.warn("Sync failed, using offline data", e);
-    document.querySelector("#syncStatus").textContent = "Offline";
-  }
-}
-
+let pc=null, dc=null;
+const cfg = { iceServers:[{urls:['stun:stun.l.google.com:19302']}] };
 
 function escapeHtml(text){ if(!text) return ''; return String(text).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]); }
 
-// Leaflet init
-const map = L.map('map').setView([20,0], 2);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '&copy; OpenStreetMap contributors'
-}).addTo(map);
-map.attributionControl.setPrefix(false);
-
-// --- STORAGE HELPERS ---
 function saveReports(){ try{ localStorage.setItem('locatedanger_reports',JSON.stringify({reports,timestamp:Date.now()})); }catch(e){} }
-function savePending(){ try{ localStorage.setItem('locatedanger_pending',JSON.stringify(pendingQueue)); }catch(e){} }
-function loadPending(){ try{ const p = localStorage.getItem('locatedanger_pending'); return p?JSON.parse(p):[]; }catch(e){return []; } }
 
-// --- LOAD initial data: local first, then server ---
 (function loadReports(){
   try{
     const saved = localStorage.getItem('locatedanger_reports');
-    if(saved){
-      const parsed = JSON.parse(saved);
-      reports = parsed.reports || [];
-    }
+    if(!saved) return;
+    const parsed = JSON.parse(saved);
+    if(Date.now()-(parsed.timestamp||0)<24*60*60*1000) reports = parsed.reports||[];
+    else localStorage.removeItem('locatedanger_reports');
   }catch(e){}
   renderTasks();
   renderPins();
-  // then attempt to fetch from server and merge
-  fetch('/api/reports').then(r=>r.json()).then(serverReports=>{
-    const mapd = new Map();
-    reports.concat(serverReports).forEach(r=>mapd.set(r.id||r.ts, r));
-    reports = Array.from(mapd.values()).sort((a,b)=>a.ts-b.ts);
-    renderTasks(); renderPins(); saveReports();
-  }).catch(()=>{ updateSyncStatus('offline'); });
 })();
 
-function addReport(r){ if(!r.ts) r.ts=Date.now(); reports.push(r); renderTasks(); renderPins(); saveReports(); pushReportToServer(r).catch(()=>{ pendingQueue.push(r); savePending(); updateSyncStatus('offline'); }); }
+function addReport(r){ if(!r.ts) r.ts=Date.now(); reports.push(r); renderTasks(); renderPins(); saveReports(); broadcastReports(); }
 
-function pushReportToServer(report){
-  if(!report) return Promise.reject(new Error('no report'));
-  return fetch('/api/reports', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(report)
-  }).then(res=>{
-    if(!res.ok) throw new Error('post failed');
-    return res.json().then(savedReport=>{
-      reports = reports.map(r=> (r.ts===report.ts? Object.assign({}, r, savedReport) : r));
-      renderTasks(); renderPins(); saveReports();
-      updateSyncStatus('online');
-    });
-  });
-}
-
-function flushPendingQueue(){
-  if(syncing || pendingQueue.length===0) return;
-  syncing = true; updateSyncStatus('syncing');
-  const toSend = pendingQueue.slice();
-  const sendNext = ()=>{
-    if(toSend.length===0){
-      pendingQueue = []; savePending();
-      syncing = false; updateSyncStatus('synced');
-      setTimeout(()=>{ updateSyncStatus('online'); }, 1200);
-      return;
-    }
-    const r = toSend.shift();
-    pushReportToServer(r).then(()=> sendNext()).catch(()=>{ pendingQueue = toSend.slice(); savePending(); syncing=false; updateSyncStatus('offline'); });
-  };
-  sendNext();
-}
-
-// --- UI rendering ---
 function renderTasks(){
   const t = document.getElementById('tasks'); t.innerHTML='';
   reports.forEach((r,idx)=>{
@@ -322,8 +238,11 @@ function renderTasks(){
         const pinObj = markers.find(m=>Number(m.ts)===Number(r.ts));
         if(pinObj){
           try{
-            map.setView([r.lat,r.lng],14,{animate:true});
-            if(pinObj.leafletMarker && pinObj.leafletMarker.openPopup) pinObj.leafletMarker.openPopup();
+            map.flyTo({center:[r.lng,r.lat],zoom:14});
+            if(pinObj.popup && typeof pinObj.popup.addTo==='function') pinObj.popup.addTo(map);
+            else if(pinObj.marker && typeof pinObj.marker.getPopup==='function'){
+              const p=pinObj.marker.getPopup(); if(p&&p.addTo)p.addTo(map);
+            }
           }catch(e){}
         }
       } else div.innerHTML=`<b>${escapeHtml(r.type)}</b> (${escapeHtml(r.urgencyLabel)})<br>${escapeHtml(r.title)}`;
@@ -333,36 +252,38 @@ function renderTasks(){
 }
 
 function renderPins(){
-  markers.forEach(m=>{ try{ map.removeLayer(m.leafletMarker); }catch(e){} });
+  markers.forEach(m=>{try{ if(m.marker)m.marker.remove(); }catch(e){} });
   markers=[];
+  if(heatmapOn){
+    safeRemoveLayer('heat-layer'); safeRemoveSource('reports-source');
+    const features = reports.filter(r=>r.lat&&r.lng).map(r=>({type:'Feature',geometry:{type:'Point',coordinates:[Number(r.lng),Number(r.lat)]},properties:{ts:r.ts,urgency:Number(r.urgency||1)}}));
+    try{
+      map.addSource('reports-source',{type:'geojson',data:{type:'FeatureCollection',features}});
+      map.addLayer({id:'heat-layer',type:'heatmap',source:'reports-source',paint:{'heatmap-weight':['interpolate',['linear'],['get','urgency'],1,0.2,3,1],'heatmap-intensity':['interpolate',['linear'],['zoom'],0,1,9,3],'heatmap-radius':['interpolate',['linear'],['zoom'],0,10,9,40],'heatmap-opacity':0.75}});
+    }catch(e){}
+    return;
+  } else { safeRemoveLayer('heat-layer'); safeRemoveSource('reports-source'); }
+
   reports.forEach(r=>{
-    if(r.lat==null||r.lng==null) return;
-    const el = document.createElement('div');
+    if(!r.lat||!r.lng) return;
+    const el=document.createElement('div'); 
     let emoji='📍';
     if(r.type==='Fire') emoji='🔥'; if(r.type==='Flood') emoji='🌊';
     if(r.type==='Medical') emoji='🚑'; if(r.type==='Power outage') emoji='💡';
-    el.textContent = emoji;
-    el.style.fontSize = '20px';
-    el.style.lineHeight = '1';
+    el.textContent=emoji; el.style.fontSize='20px';
     if(String(r.urgency)==='3'){
       el.style.animation='pulse 1.2s infinite';
       el.style.fontSize='28px';
     }
-    const icon = L.divIcon({ html: el.outerHTML, className: '', iconSize: [28,28] });
-    const leafletMarker = L.marker([r.lat, r.lng], { icon }).addTo(map);
-    const content = `<div style="min-width:180px"><b>${escapeHtml(r.title)}</b><br><small><i>${escapeHtml(r.type)}</i> — ${escapeHtml(r.urgencyLabel)}</small><br><div style="margin-top:6px">${escapeHtml(r.details||'')}</div><div style="margin-top:6px;font-size:11px;color:#555">${new Date(r.ts).toLocaleString()}</div></div>`;
-    leafletMarker.bindPopup(content, { offset: [0,-10] });
-    markers.push({ leafletMarker, ts: r.ts, lat: r.lat, lng: r.lng });
+    const content=`<div style="min-width:180px"><b>${escapeHtml(r.title)}</b><br><small><i>${escapeHtml(r.type)}</i> — ${escapeHtml(r.urgencyLabel)}</small><br><div style="margin-top:6px">${escapeHtml(r.details||'')}</div><div style="margin-top:6px;font-size:11px;color:#555">${new Date(r.ts).toLocaleString()}</div></div>`;
+    const popup = new maplibregl.Popup({offset:25}).setHTML(content);
+    const marker = new maplibregl.Marker({element:el}).setLngLat([Number(r.lng),Number(r.lat)]).setPopup(popup).addTo(map);
+    markers.push({marker,popup,ts:r.ts,lat:r.lat,lng:r.lng});
   });
 }
 
-function updateSyncStatus(state){
-  try{ syncBadge.style.display='flex'; }catch(e){ return; }
-  if(state==='online'){ syncDot.style.background = '#16a34a'; syncText.textContent='Online'; }
-  else if(state==='syncing'){ syncDot.style.background = '#f59e0b'; syncText.textContent='Syncing…'; }
-  else if(state==='synced'){ syncDot.style.background = '#10b981'; syncText.textContent='Synced'; }
-  else { syncDot.style.background = '#ef4444'; syncText.textContent='Offline'; }
-}
+function safeRemoveLayer(id){try{if(map.getLayer(id))map.removeLayer(id);}catch(e){}}
+function safeRemoveSource(id){try{if(map.getSource(id))map.removeSource(id);}catch(e){}}
 
 // --- BUTTONS ---
 closeSheet.addEventListener('click',()=>{sheet.classList.remove('open'); reportSection.style.display='none'; syncSection.style.display='none'; backSync.style.display='none'; fabContainer.style.display='flex';});
@@ -372,7 +293,7 @@ syncFab.addEventListener('click',()=>{ syncSection.style.display='block'; report
 locBtn.addEventListener('click', ()=>{
   if(!navigator.geolocation){ alert('Geolocation not supported'); return; }
   navigator.geolocation.getCurrentPosition(pos=>{
-    map.setView([pos.coords.latitude,pos.coords.longitude],15,{animate:true});
+    map.flyTo({center:[pos.coords.longitude,pos.coords.latitude],zoom:15});
   });
 });
 
@@ -383,8 +304,7 @@ addPinBtn.addEventListener('click',()=>{
     const lng = pos.coords.longitude;
     const urgencyLevel = urgency.value;                 
     const urgencyLabelText = {1:'Low',2:'Med',3:'High'}[urgencyLevel] || 'Med';
-    const newReport = {
-      id: 'local-'+Date.now(),
+    addReport({
       title: document.getElementById('title').value || 'No title',
       details: document.getElementById('details').value || '',
       type: document.getElementById('type').value,
@@ -392,8 +312,7 @@ addPinBtn.addEventListener('click',()=>{
       urgencyLabel: urgencyLabelText,
       lat, lng,
       ts: Date.now()
-    };
-    addReport(newReport);
+    });
     sheet.classList.remove('open'); 
     fabContainer.style.display = 'flex';
     confetti({particleCount:30,spread:70});
@@ -410,26 +329,28 @@ manualPinBtn.addEventListener('click',()=>{
 map.on('click', e=>{
   if(!manualMode) return;
   manualMode = false;
-  if(manualMarker) try{ map.removeLayer(manualMarker); }catch(e){}
-  const lat = e.latlng.lat, lng = e.latlng.lng;
+  if(manualMarker) manualMarker.remove();
+  const el = document.createElement('div'); el.textContent='📍'; el.style.fontSize='22px';
+  manualMarker = new maplibregl.Marker(el).setLngLat([e.lngLat.lng,e.lngLat.lat]).addTo(map);
+  
   const urgencyLevel = urgency.value;                 
   const urgencyLabelText = {1:'Low',2:'Med',3:'High'}[urgencyLevel] || 'Med';
-  const newReport = {
-    id: 'local-'+Date.now(),
+
+  addReport({
     title: document.getElementById('title').value || 'No title',
     details: document.getElementById('details').value || '',
     type: document.getElementById('type').value,
     urgency: urgencyLevel,
     urgencyLabel: urgencyLabelText,
-    lat, lng,
+    lat: e.lngLat.lat,
+    lng: e.lngLat.lng,
     ts: Date.now()
-  };
-  addReport(newReport);
+  });
   confetti({particleCount:30,spread:70});
 });
 
 clearBtn.addEventListener('click',()=>{
-  if(confirm('Clear all reports?')){ reports=[]; pendingQueue=[]; saveReports(); savePending(); renderTasks(); renderPins(); fetch('/api/reports',{method:'DELETE'}).catch(()=>{}); }
+  if(confirm('Clear all reports?')){ reports=[]; saveReports(); renderTasks(); renderPins(); }
 });
 
 heatBtn.addEventListener('click',()=>{
@@ -448,7 +369,7 @@ searchBox.addEventListener('input',e=>{
         suggestions.innerHTML=''; data.slice(0,6).forEach(d=>{
           const li=document.createElement('li');
           li.textContent=d.display_name;
-          li.addEventListener('click',()=>{map.setView([d.lat,d.lon],14,{animate:true}); suggestions.style.display='none'; searchBox.value='';});
+          li.addEventListener('click',()=>{map.flyTo({center:[d.lon,d.lat],zoom:14}); suggestions.style.display='none'; searchBox.value='';});
           suggestions.appendChild(li);
         });
         suggestions.style.display=data.length>0?'block':'none';
@@ -467,15 +388,22 @@ function updateUrgencyLabel(){
 urgency.addEventListener('input', updateUrgencyLabel);
 updateUrgencyLabel();
 
-// attempt to detect initial connection and flush pending
-fetch('/api/reports', { method:'HEAD' }).then(()=>{ updateSyncStatus('online'); flushPendingQueue(); }).catch(()=> updateSyncStatus('offline'));
+// --- LOCAL SYNC ---
+function broadcastReports(){ if(dc&&dc.readyState==='open'){try{dc.send(JSON.stringify({type:'reports',reports}));}catch(e){}}}
+function setupConnection(isHost=false, remoteSDP=null){
+  pc = new RTCPeerConnection(cfg);
+  pc.ondatachannel = e=>{ dc=e.channel; dc.onmessage=handleMsg; }
+  if(isHost){ dc = pc.createDataChannel('reports'); dc.onmessage=handleMsg; }
+  pc.onicecandidate = e=>{ if(e.candidate) return; if(isHost){ QRCode.toCanvas(qrCanvas, LZString.compressToBase64(JSON.stringify(pc.localDescription))) } else sdpArea.value=LZString.compressToBase64(JSON.stringify(pc.localDescription)); }
+  if(isHost) pc.createOffer().then(o=>pc.setLocalDescription(o));
+  else if(remoteSDP){ const sd=JSON.parse(LZString.decompressFromBase64(remoteSDP)); pc.setRemoteDescription(sd).then(()=>pc.createAnswer().then(a=>pc.setLocalDescription(a))); }
+}
+function handleMsg(e){ try{ const data=JSON.parse(e.data); if(data.type==='reports'){ reports=data.reports; renderTasks(); renderPins(); saveReports(); } }catch(e){} }
 
-// flush pending periodically and on visibility change
-setInterval(()=>{ fetch('/api/reports', { method:'HEAD' }).then(()=>{ flushPendingQueue(); updateSyncStatus('online'); }).catch(()=> updateSyncStatus('offline')); }, 5000);
-window.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') fetch('/api/reports', { method:'HEAD' }).then(()=>{ flushPendingQueue(); updateSyncStatus('online'); }).catch(()=> updateSyncStatus('offline')); });
-
-// expose for debugging
-window._locatedanger = { reports, pendingQueue, flushPendingQueue };
+createOfferBtn.addEventListener('click',()=>{ setupConnection(true); backSync.style.display='inline-block'; });
+joinOfferBtn.addEventListener('click',()=>{ const sdp = sdpArea.value.trim(); if(!sdp) return alert('Paste code!'); setupConnection(false,sdp); });
+applySdpBtn.addEventListener('click',()=>{ const sdp = sdpArea.value.trim(); if(!sdp) return alert('Paste code!'); setupConnection(false,sdp); });
+backSync.addEventListener('click',()=>{ syncSection.style.display='block'; reportSection.style.display='none'; backSync.style.display='none'; qrCanvas.getContext('2d').clearRect(0,0,qrCanvas.width,qrCanvas.height); });
 
 }
 </script>
