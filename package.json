@@ -1,0 +1,12 @@
+{
+  "name": "locatedanger-perfect",
+  "version": "1.0.0",
+  "description": "Locate the Danger \u2014 Full frontend preserved, Leaflet map, backend sync",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

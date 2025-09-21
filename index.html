@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Locate the Danger — Reports with Details & Urgency</title>
+<style>
+:root{
+  --primary:#ec4899; --bg:#fff1f2; --card:#fff;
+  --border:#fbcfe8; --text:#4a044e; --muted:#9d174d;
+  --ok:#16a34a; --danger:#ef4444; --warn:#f59e0b;
+}
+html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;}
+body{background:var(--bg);color:var(--text);}
+
+/* Leaflet map container must have height */
+#map{position:absolute;inset:0;z-index:0;height:100vh;width:100%}
+
+/* header + tiny controls */
+#header{
+  position:absolute;top:8px;left:50%;transform:translateX(-50%);
+  background:var(--card);padding:6px 12px;border-radius:12px;
+  box-shadow:0 2px 8px rgba(0,0,0,.08);font-weight:700;
+  color:var(--primary);font-size:14px;z-index:2200;
+}
+#clearBtn{position:absolute;top:6px;right:6px;background:#ec4899;color:white;
+  border:none;border-radius:50%;width:22px;height:22px;font-size:14px;cursor:pointer;z-index:2200;}
+#heatBtn{position:absolute;top:6px;left:6px;background:#4f46e5;color:white;
+  border:none;border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer;z-index:2200;display:flex;align-items:center;gap:8px;}
+#heatState{font-size:11px;padding:2px 6px;border-radius:8px;background:#fff;color:#333;border:1px solid var(--border);}
+
+/* search */
+#searchBox{
+  position:absolute;top:40px;left:50%;transform:translateX(-50%);
+  width:60%;max-width:420px;padding:8px;border-radius:10px;border:1px solid var(--border);
+  z-index:2100;font-size:14px;background:white;
+}
+#suggestions{
+  position:absolute;top:78px;left:50%;transform:translateX(-50%);
+  width:60%;max-width:420px;background:white;border:1px solid var(--border);
+  border-radius:8px;z-index:2100;list-style:none;margin:0;padding:0;font-size:14px;display:none;
+  max-height:220px;overflow:auto;
+}
+#suggestions li{padding:8px;cursor:pointer;}
+#suggestions li:hover{background:#fbcfe8;}
+
+/* sheet */
+#sheet{
+  position:absolute;left:0;right:0;bottom:-100%;background:var(--card);
+  border-radius:16px 16px 0 0;box-shadow:0 -4px 18px rgba(0,0,0,0.12);
+  padding:14px;max-height:72%;overflow:auto;transition:bottom .28s ease;z-index:2000;
+}
+#sheet.open{bottom:0}
+#closeSheet{position:absolute;top:8px;right:12px;background:none;border:none;font-size:18px;cursor:pointer;color:var(--muted);}
+
+label{font-size:13px;color:var(--muted);margin-top:8px;display:block}
+input[type="text"],select,textarea{
+  width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);
+  background:transparent;color:var(--text);font-size:14px;
+}
+textarea{min-height:60px;resize:vertical}
+.btn{background:var(--primary);color:white;padding:8px 12px;border-radius:8px;border:none;cursor:pointer;font-size:13px}
+
+/* tasks */
+#tasks{margin-top:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px}
+.task{background:var(--card);border:1px solid var(--border);padding:8px;border-radius:10px;font-size:13px;cursor:pointer}
+
+/* FABs */
+#fab-container{
+  position:absolute;right:18px;bottom:18px;display:flex;flex-direction:column;gap:10px;z-index:2300;
+}
+.fab{background:var(--primary);color:#fff;width:54px;height:54px;border:none;border-radius:50%;font-size:22px;
+  box-shadow:0 6px 20px rgba(0,0,0,0.18);cursor:pointer;display:flex;align-items:center;justify-content:center}
+.fab-label{background:var(--card);color:var(--muted);padding:6px 8px;border-radius:8px;font-size:12px;box-shadow:0 2px 6px rgba(0,0,0,0.08)}
+#qrCanvas{ pointer-events:none; z-index:1500; position:relative; display:block; margin:6px auto; width:120px; height:120px; }
+
+/* small pulse for high urgency */
+@keyframes pulse {
+  0% { transform: scale(1); filter: drop-shadow(0 0 4px rgba(255,0,0,0.6)); }
+  50% { transform: scale(1.25); filter: drop-shadow(0 0 12px rgba(255,0,0,0.85)); }
+  100% { transform: scale(1); filter: drop-shadow(0 0 4px rgba(255,0,0,0.6)); }
+}
+
+/* improved urgency slider */
+#urgency {
+  width:100%;height:6px;margin:8px 0;appearance:none;background:linear-gradient(90deg,var(--ok),var(--warn),var(--danger));
+  border-radius:6px;outline:none;
+}
+#urgency::-webkit-slider-thumb {
+  -webkit-appearance:none; appearance:none; width:18px;height:18px;border-radius:50%;background:var(--primary);
+  cursor:pointer;border:2px solid white;box-shadow:0 0 6px rgba(0,0,0,0.2);
+}
+#urgency::-moz-range-thumb {
+  width:18px;height:18px;border-radius:50%;background:var(--primary);
+  cursor:pointer;border:2px solid white;box-shadow:0 0 6px rgba(0,0,0,0.2);
+}
+.urg-labels{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;margin-top:2px}
+#urgencyValue {font-size:13px;font-weight:600;margin-left:6px}
+
+/* sync badge */
+#syncBadge{
+  position:fixed;right:14px;bottom:14px;padding:8px 10px;border-radius:10px;background:#111;color:white;font-size:13px;z-index:4000;
+  box-shadow:0 6px 18px rgba(0,0,0,0.25);display:flex;align-items:center;gap:8px;
+}
+#syncDot{width:10px;height:10px;border-radius:50%;background:#ef4444;display:inline-block}
+
+/* small responsive tweak */
+@media(max-width:480px){ #searchBox{width:86%;} .fab{width:48px;height:48px} #header{font-size:13px} }
+</style>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lz-string/libs/lz-string.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="header">⚠️ Locate the Danger</div>
+<button id="clearBtn" title="Clear all reports">×</button>
+<button id="heatBtn" title="Toggle heatmap"><span>Heatmap</span> <span id="heatState">OFF</span></button>
+
+<input id="searchBox" type="text" placeholder="Search address (type & choose)...">
+<ul id="suggestions"></ul>
+
+<div id="fab-container">
+  <div class="fab-label">New Report</div>
+  <button id="reportFab" class="fab" title="New report">📝</button>
+
+  <div class="fab-label">Local Sync</div>
+  <button id="syncFab" class="fab" title="Local sync">🔗</button>
+
+  <div class="fab-label">Find Me</div>
+  <button id="locBtn" class="fab" title="Find my location">📍</button>
+</div>
+
+<div id="sheet">
+  <button id="closeSheet">✖</button>
+
+  <div id="reportSection" style="display:none">
+    <h2>New Report</h2>
+    <label>Title</label>
+    <input id="title" type="text" placeholder="Short title" />
+    <label>Type</label>
+    <select id="type">
+      <option>Other</option><option>Fire</option><option>Flood</option>
+      <option>Power outage</option><option>Medical</option><option>Unsafe person</option>
+    </select>
+    <label>Details</label>
+    <textarea id="details" placeholder="Describe the situation..."></textarea>
+    <label>Urgency: <span id="urgencyValue">Med</span></label>
+    <input type="range" id="urgency" min="1" max="3" step="1" value="2" />
+    <div class="urg-labels"><span>Low</span><span>Med</span><span>High</span></div>
+    <button id="addPin" class="btn" style="margin-top:8px">Submit Report (GPS)</button>
+    <button id="manualPin" class="btn" style="margin-top:6px;background:#9d174d">Select Location Manually</button>
+  </div>
+
+  <div id="syncSection" style="display:none">
+    <h2>Local Sync</h2>
+    <canvas id="qrCanvas" width="120" height="120"></canvas>
+    <div style="display:flex;gap:8px;margin-top:6px">
+      <button id="createOffer" class="btn">Host Sync</button>
+      <button id="joinOffer" class="btn">Join Sync</button>
+    </div>
+    <textarea id="sdpArea" placeholder="Paste compressed sync code here" style="width:100%;margin-top:8px;padding:6px;border-radius:8px;border:1px solid var(--border)"></textarea>
+    <button id="applySdp" class="btn" style="margin-top:6px">Apply Code</button>
+    <button id="backSync" class="btn" style="margin-top:8px;display:none;background:#374151">⬅ Back</button>
+    <div style="margin-top:10px;font-size:12px;color:#555">Note: Sync code is compressed for readability — copy/paste or scan QR on the other device.</div>
+  </div>
+
+  <h2 style="margin-top:12px">Tasks</h2>
+  <div id="tasks"></div>
+</div>
+
+<div id="syncBadge" title="Sync status" style="display:none"><span id="syncDot"></span><span id="syncText">Offline</span></div>
+
+<script>
+document.addEventListener('DOMContentLoaded', init);
+function init(){
+const sheet = document.getElementById('sheet');
+const reportSection = document.getElementById('reportSection');
+const syncSection = document.getElementById('syncSection');
+const closeSheet = document.getElementById('closeSheet');
+const reportFab = document.getElementById('reportFab');
+const syncFab = document.getElementById('syncFab');
+const locBtn = document.getElementById('locBtn');
+const addPinBtn = document.getElementById('addPin');
+const manualPinBtn = document.getElementById('manualPin');
+const clearBtn = document.getElementById('clearBtn');
+const heatBtn = document.getElementById('heatBtn');
+const heatState = document.getElementById('heatState');
+const searchBox = document.getElementById('searchBox');
+const suggestions = document.getElementById('suggestions');
+const qrCanvas = document.getElementById('qrCanvas');
+const createOfferBtn = document.getElementById('createOffer');
+const joinOfferBtn = document.getElementById('joinOffer');
+const applySdpBtn = document.getElementById('applySdp');
+const sdpArea = document.getElementById('sdpArea');
+const backSync = document.getElementById('backSync');
+const fabContainer = document.getElementById('fab-container');
+const urgency = document.getElementById('urgency');
+const urgencyValue = document.getElementById('urgencyValue');
+const syncBadge = document.getElementById('syncBadge');
+const syncDot = document.getElementById('syncDot');
+const syncText = document.getElementById('syncText');
+
+let reports = [];
+let markers = [];
+let manualMode = false;
+let manualMarker = null;
+let heatmapOn = false;
+let pendingQueue = loadPending(); // offline queue
+let syncing = false;
+
+function escapeHtml(text){ if(!text) return ''; return String(text).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]); }
+
+// Leaflet init
+const map = L.map('map').setView([20,0], 2);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+map.attributionControl.setPrefix(false);
+
+// --- STORAGE HELPERS ---
+function saveReports(){ try{ localStorage.setItem('locatedanger_reports',JSON.stringify({reports,timestamp:Date.now()})); }catch(e){} }
+function savePending(){ try{ localStorage.setItem('locatedanger_pending',JSON.stringify(pendingQueue)); }catch(e){} }
+function loadPending(){ try{ const p = localStorage.getItem('locatedanger_pending'); return p?JSON.parse(p):[]; }catch(e){return []; } }
+
+// --- LOAD initial data: local first, then server ---
+(function loadReports(){
+  try{
+    const saved = localStorage.getItem('locatedanger_reports');
+    if(saved){
+      const parsed = JSON.parse(saved);
+      reports = parsed.reports || [];
+    }
+  }catch(e){}
+  renderTasks();
+  renderPins();
+  // then attempt to fetch from server and merge
+  fetch('/api/reports').then(r=>r.json()).then(serverReports=>{
+    const mapd = new Map();
+    reports.concat(serverReports).forEach(r=>mapd.set(r.id||r.ts, r));
+    reports = Array.from(mapd.values()).sort((a,b)=>a.ts-b.ts);
+    renderTasks(); renderPins(); saveReports();
+  }).catch(()=>{ updateSyncStatus('offline'); });
+})();
+
+function addReport(r){ if(!r.ts) r.ts=Date.now(); reports.push(r); renderTasks(); renderPins(); saveReports(); pushReportToServer(r).catch(()=>{ pendingQueue.push(r); savePending(); updateSyncStatus('offline'); }); }
+
+function pushReportToServer(report){
+  if(!report) return Promise.reject(new Error('no report'));
+  return fetch('/api/reports', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(report)
+  }).then(res=>{
+    if(!res.ok) throw new Error('post failed');
+    return res.json().then(savedReport=>{
+      reports = reports.map(r=> (r.ts===report.ts? Object.assign({}, r, savedReport) : r));
+      renderTasks(); renderPins(); saveReports();
+      updateSyncStatus('online');
+    });
+  });
+}
+
+function flushPendingQueue(){
+  if(syncing || pendingQueue.length===0) return;
+  syncing = true; updateSyncStatus('syncing');
+  const toSend = pendingQueue.slice();
+  const sendNext = ()=>{
+    if(toSend.length===0){
+      pendingQueue = []; savePending();
+      syncing = false; updateSyncStatus('synced');
+      setTimeout(()=>{ updateSyncStatus('online'); }, 1200);
+      return;
+    }
+    const r = toSend.shift();
+    pushReportToServer(r).then(()=> sendNext()).catch(()=>{ pendingQueue = toSend.slice(); savePending(); syncing=false; updateSyncStatus('offline'); });
+  };
+  sendNext();
+}
+
+// --- UI rendering ---
+function renderTasks(){
+  const t = document.getElementById('tasks'); t.innerHTML='';
+  reports.forEach((r,idx)=>{
+    const div = document.createElement('div'); div.className='task';
+    div.innerHTML=`<b>${escapeHtml(r.type)}</b> (${escapeHtml(r.urgencyLabel)})<br>${escapeHtml(r.title)}`;
+    let expanded=false;
+    div.addEventListener('click',(ev)=>{
+      ev.stopPropagation(); expanded=!expanded;
+      if(expanded){
+        div.innerHTML=`<b>${escapeHtml(r.type)}</b> (${escapeHtml(r.urgencyLabel)})<br>
+          <b>${escapeHtml(r.title)}</b><br><i>${escapeHtml(r.details||'')}</i><br>
+          <small>Lat: ${Number(r.lat).toFixed(5)}, Lng: ${Number(r.lng).toFixed(5)}</small><br>
+          <small>${new Date(r.ts).toLocaleString()}</small>`;
+        const pinObj = markers.find(m=>Number(m.ts)===Number(r.ts));
+        if(pinObj){
+          try{
+            map.setView([r.lat,r.lng],14,{animate:true});
+            if(pinObj.leafletMarker && pinObj.leafletMarker.openPopup) pinObj.leafletMarker.openPopup();
+          }catch(e){}
+        }
+      } else div.innerHTML=`<b>${escapeHtml(r.type)}</b> (${escapeHtml(r.urgencyLabel)})<br>${escapeHtml(r.title)}`;
+    });
+    t.appendChild(div);
+  });
+}
+
+function renderPins(){
+  markers.forEach(m=>{ try{ map.removeLayer(m.leafletMarker); }catch(e){} });
+  markers=[];
+  reports.forEach(r=>{
+    if(r.lat==null||r.lng==null) return;
+    const el = document.createElement('div');
+    let emoji='📍';
+    if(r.type==='Fire') emoji='🔥'; if(r.type==='Flood') emoji='🌊';
+    if(r.type==='Medical') emoji='🚑'; if(r.type==='Power outage') emoji='💡';
+    el.textContent = emoji;
+    el.style.fontSize = '20px';
+    el.style.lineHeight = '1';
+    if(String(r.urgency)==='3'){
+      el.style.animation='pulse 1.2s infinite';
+      el.style.fontSize='28px';
+    }
+    const icon = L.divIcon({ html: el.outerHTML, className: '', iconSize: [28,28] });
+    const leafletMarker = L.marker([r.lat, r.lng], { icon }).addTo(map);
+    const content = `<div style="min-width:180px"><b>${escapeHtml(r.title)}</b><br><small><i>${escapeHtml(r.type)}</i> — ${escapeHtml(r.urgencyLabel)}</small><br><div style="margin-top:6px">${escapeHtml(r.details||'')}</div><div style="margin-top:6px;font-size:11px;color:#555">${new Date(r.ts).toLocaleString()}</div></div>`;
+    leafletMarker.bindPopup(content, { offset: [0,-10] });
+    markers.push({ leafletMarker, ts: r.ts, lat: r.lat, lng: r.lng });
+  });
+}
+
+function updateSyncStatus(state){
+  try{ syncBadge.style.display='flex'; }catch(e){ return; }
+  if(state==='online'){ syncDot.style.background = '#16a34a'; syncText.textContent='Online'; }
+  else if(state==='syncing'){ syncDot.style.background = '#f59e0b'; syncText.textContent='Syncing…'; }
+  else if(state==='synced'){ syncDot.style.background = '#10b981'; syncText.textContent='Synced'; }
+  else { syncDot.style.background = '#ef4444'; syncText.textContent='Offline'; }
+}
+
+// --- BUTTONS ---
+closeSheet.addEventListener('click',()=>{sheet.classList.remove('open'); reportSection.style.display='none'; syncSection.style.display='none'; backSync.style.display='none'; fabContainer.style.display='flex';});
+reportFab.addEventListener('click',()=>{ reportSection.style.display='block'; syncSection.style.display='none'; sheet.classList.add('open'); backSync.style.display='none'; fabContainer.style.display='none'; });
+syncFab.addEventListener('click',()=>{ syncSection.style.display='block'; reportSection.style.display='none'; sheet.classList.add('open'); fabContainer.style.display='none'; });
+
+locBtn.addEventListener('click', ()=>{
+  if(!navigator.geolocation){ alert('Geolocation not supported'); return; }
+  navigator.geolocation.getCurrentPosition(pos=>{
+    map.setView([pos.coords.latitude,pos.coords.longitude],15,{animate:true});
+  });
+});
+
+addPinBtn.addEventListener('click',()=>{
+  if(!navigator.geolocation){ alert('Geolocation not supported'); return; }
+  navigator.geolocation.getCurrentPosition(pos=>{
+    const lat = pos.coords.latitude;
+    const lng = pos.coords.longitude;
+    const urgencyLevel = urgency.value;                 
+    const urgencyLabelText = {1:'Low',2:'Med',3:'High'}[urgencyLevel] || 'Med';
+    const newReport = {
+      id: 'local-'+Date.now(),
+      title: document.getElementById('title').value || 'No title',
+      details: document.getElementById('details').value || '',
+      type: document.getElementById('type').value,
+      urgency: urgencyLevel,
+      urgencyLabel: urgencyLabelText,
+      lat, lng,
+      ts: Date.now()
+    };
+    addReport(newReport);
+    sheet.classList.remove('open'); 
+    fabContainer.style.display = 'flex';
+    confetti({particleCount:30,spread:70});
+  });
+});
+
+manualPinBtn.addEventListener('click',()=>{
+  manualMode = true;
+  alert('Click on the map to place your report');
+  sheet.classList.remove('open'); 
+  fabContainer.style.display = 'flex';
+});
+
+map.on('click', e=>{
+  if(!manualMode) return;
+  manualMode = false;
+  if(manualMarker) try{ map.removeLayer(manualMarker); }catch(e){}
+  const lat = e.latlng.lat, lng = e.latlng.lng;
+  const urgencyLevel = urgency.value;                 
+  const urgencyLabelText = {1:'Low',2:'Med',3:'High'}[urgencyLevel] || 'Med';
+  const newReport = {
+    id: 'local-'+Date.now(),
+    title: document.getElementById('title').value || 'No title',
+    details: document.getElementById('details').value || '',
+    type: document.getElementById('type').value,
+    urgency: urgencyLevel,
+    urgencyLabel: urgencyLabelText,
+    lat, lng,
+    ts: Date.now()
+  };
+  addReport(newReport);
+  confetti({particleCount:30,spread:70});
+});
+
+clearBtn.addEventListener('click',()=>{
+  if(confirm('Clear all reports?')){ reports=[]; pendingQueue=[]; saveReports(); savePending(); renderTasks(); renderPins(); fetch('/api/reports',{method:'DELETE'}).catch(()=>{}); }
+});
+
+heatBtn.addEventListener('click',()=>{
+  heatmapOn=!heatmapOn; heatState.textContent=heatmapOn?'ON':'OFF'; renderPins();
+});
+
+// --- SEARCH ---
+let searchTimeout=null;
+searchBox.addEventListener('input',e=>{
+  const q=e.target.value.trim(); if(!q){ suggestions.style.display='none'; return; }
+  if(searchTimeout) clearTimeout(searchTimeout);
+  searchTimeout=setTimeout(()=>{
+    fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`)
+      .then(res=>res.json())
+      .then(data=>{
+        suggestions.innerHTML=''; data.slice(0,6).forEach(d=>{
+          const li=document.createElement('li');
+          li.textContent=d.display_name;
+          li.addEventListener('click',()=>{map.setView([d.lat,d.lon],14,{animate:true}); suggestions.style.display='none'; searchBox.value='';});
+          suggestions.appendChild(li);
+        });
+        suggestions.style.display=data.length>0?'block':'none';
+      });
+  },300);
+});
+
+// --- URGENCY LIVE LABEL ---
+function updateUrgencyLabel(){
+  const labels={1:'Low',2:'Med',3:'High'};
+  urgencyValue.textContent = labels[urgency.value] || 'Med';
+  if(urgency.value=="1"){ urgencyValue.style.color = "var(--ok)"; }
+  else if(urgency.value=="2"){ urgencyValue.style.color = "var(--warn)"; }
+  else { urgencyValue.style.color = "var(--danger)"; }
+}
+urgency.addEventListener('input', updateUrgencyLabel);
+updateUrgencyLabel();
+
+// attempt to detect initial connection and flush pending
+fetch('/api/reports', { method:'HEAD' }).then(()=>{ updateSyncStatus('online'); flushPendingQueue(); }).catch(()=> updateSyncStatus('offline'));
+
+// flush pending periodically and on visibility change
+setInterval(()=>{ fetch('/api/reports', { method:'HEAD' }).then(()=>{ flushPendingQueue(); updateSyncStatus('online'); }).catch(()=> updateSyncStatus('offline')); }, 5000);
+window.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') fetch('/api/reports', { method:'HEAD' }).then(()=>{ flushPendingQueue(); updateSyncStatus('online'); }).catch(()=> updateSyncStatus('offline')); });
+
+// expose for debugging
+window._locatedanger = { reports, pendingQueue, flushPendingQueue };
+
+}
+</script>
+</body>
+</html>
