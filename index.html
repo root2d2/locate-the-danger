@@ -212,6 +212,29 @@ let manualMarker = null;
 let heatmapOn = false;
 let pendingQueue = loadPending(); // offline queue
 let syncing = false;
+  
+async function syncWithServer() {
+  try {
+    document.querySelector("#syncStatus").textContent = "Syncing...";
+    const res = await fetch("/api/reports");
+    const serverReports = await res.json();
+    const localReports = JSON.parse(localStorage.getItem("reports") || "[]");
+
+    const merged = [...localReports];
+    serverReports.forEach(r => {
+      if (!merged.some(l => l.id === r.id)) merged.push(r);
+    });
+
+    localStorage.setItem("reports", JSON.stringify(merged));
+    renderPins(merged);
+    renderTasks(merged);
+    document.querySelector("#syncStatus").textContent = "Online ✓";
+  } catch (e) {
+    console.warn("Sync failed, using offline data", e);
+    document.querySelector("#syncStatus").textContent = "Offline";
+  }
+}
+
 
 function escapeHtml(text){ if(!text) return ''; return String(text).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]); }
 
